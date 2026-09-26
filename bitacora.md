@@ -41,7 +41,7 @@ El proyecto requería decisiones sobre:
 
 ---
 
-## mplementación Puntos 4 y 5
+## Implementación Puntos 4 y 5
 
 ### Qué se hizo
 - Implementación de Punto 4: Almacenamiento Óptimo con Delta Lake
