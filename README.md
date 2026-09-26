@@ -43,27 +43,33 @@ OceanWatch Analytics es un pipeline end-to-end de análisis de datos marítimos 
 
 ### Punto 3: Preguntas de Negocio (25%)
 
-**a) Actividad diaria**: Cuántos buques distintos transmitieron cada día
-- Conteo exacto vs aproximado (HyperLogLog++)
-- Rango: 3,847 - 5,284 buques únicos por día
+### a) Actividad diaria
+Conteo exacto vs aproximado (HyperLogLog++)
+Rango real: 19,615 - 21,153 buques únicos por día
 
-**b) Tráfico por tipo de buque**: Top 10 + velocidad media
-- Carga (70), Tanqueros (80), Pasajeros (60) lideran
-- Velocidades promedio 10-12 nudos
+### b) Tráfico por tipo de buque
+Remolcadores (~33%) y embarcaciones de placer (~26%) lideran, no carga/tanqueros
+Velocidades promedio entre 1.6 y 6.4 nudos (carga y tanqueros con las más altas)
 
-**c) Top 10 buques por distancia recorrida**
-- Cálculo Haversine entre posiciones
-- Rango: 1,247 - 8,934 km por buque
+### c) Top 10 buques por distancia recorrida
+Cálculo Haversine entre posiciones consecutivas
+Rango obtenido: 249,765 - 7,931,112 km por buque
+Nota: estos valores son físicamente imposibles para una semana de navegación, 
+lo que indica un problema de calidad de datos (probable reutilización de MMSI 
+entre embarcaciones distintas). Se identificó que aplicar un filtro de 
+velocidad implícita entre posiciones consecutivas (descartando saltos 
+>100 km/h) corrige el problema, pero no se alcanzó a correr la versión final 
+con esa corrección.
 
-**d) Concentración espacial (Hotspots)**
-- Grilla H3 resolución 8
-- Identificación de puertos principales
-- Cruces con World Port Index
+### d) Concentración espacial (Hotspots)
+Grilla H3 resolución 8
+Identificación de puertos principales
+Cruces con World Port Index
 
-**e) Permanencia de buques**
-- 12.4% transmitió los 7 días completos
-- 8.7% fueron visitantes de 1 solo día
-- Ubicación de visitantes por zona
+### e) Permanencia de buques
+39.74% transmitió los 7 días completos
+18.81% fueron visitantes de 1 solo día
+Ubicación de visitantes por zona
 
 ### Punto 4: Almacenamiento Óptimo (25%)
 
@@ -168,25 +174,28 @@ oceanwatch (catálogo)
 
 ## Hallazgos Clave
 
-1. **Concentración de tráfico**: Los mayores hotspots se encuentran en:
-   - Estrecho de Malaca
-   - Canal de Suez
-   - Puertos principales (Róterdam, Singapur, Shanghai)
+1. **Concentración de tráfico**: El dataset corresponde a datos AIS de la NOAA 
+   para aguas de Estados Unidos (1 al 7 de junio de 2023), por lo que los 
+   hotspots se ubican en aguas jurisdiccionales estadounidenses, principalmente 
+   en el Golfo de México y zonas costeras del este del país.
 
 2. **Composición de flota**: Dominada por:
-   - Barcos de carga (45%)
-   - Tanqueros (25%)
-   - Barcos de pasajeros (15%)
+   - Remolcadores (códigos 31 y 52 combinados): ~33%
+   - Embarcaciones de placer: ~26%
+   - Pasajeros: ~8.5%
+   - Pesca: ~7.1%
+   - Carga: ~6.8%
+   - Tanqueros: ~3.2%
+   
+   La flota está dominada por remolcadores y embarcaciones de placer, no por 
+   carga/tanqueros, consistente con tráfico costero y portuario de EE.UU.
 
-3. **Patrones de movimiento**: 
-   - 12.4% de buques transmiten durante toda la semana
-   - 8.7% son visitantes ocasionales (1 día)
-   - Velocidad promedio: 10-12 nudos
-
-4. **Calidad de datos**:
-   - 99.2% de registros válidos
-   - Anomalías detectadas: <0.8%
-   - Datos aptos para machine learning
+3. **Patrones de movimiento**:
+   - 39.74% de buques transmiten durante toda la semana
+   - 18.81% son visitantes ocasionales (1 día)
+   - Velocidad promedio por tipo: entre 1.6 y 6.4 nudos (carga y tanqueros con 
+     las velocidades más altas, remolcadores y embarcaciones de placer las 
+     más bajas)
 
 ---
 
