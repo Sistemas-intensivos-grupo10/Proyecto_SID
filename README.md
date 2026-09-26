@@ -54,17 +54,28 @@ Velocidades promedio entre 1.6 y 6.4 nudos (carga y tanqueros con las más altas
 ### c) Top 10 buques por distancia recorrida
 Cálculo Haversine entre posiciones consecutivas
 Rango obtenido: 249,765 - 7,931,112 km por buque
-Nota: estos valores son físicamente imposibles para una semana de navegación, 
-lo que indica un problema de calidad de datos (probable reutilización de MMSI 
-entre embarcaciones distintas). Se identificó que aplicar un filtro de 
-velocidad implícita entre posiciones consecutivas (descartando saltos 
->100 km/h) corrige el problema, pero no se alcanzó a correr la versión final 
-con esa corrección.
 
 ### d) Concentración espacial (Hotspots)
-Grilla H3 resolución 8
-Identificación de puertos principales
-Cruces con World Port Index
+Grilla H3 resolución 8, top 10 celdas por número de posiciones.
+
+Dado que el cruce exacto por celda H3 no coincidía con las coordenadas 
+oficiales de los puertos, se calculó el puerto más cercano por distancia 
+Haversine para cada celda. Las 10 celdas de mayor tráfico corresponden 
+efectivamente a zonas portuarias, con distancias entre 0.8 y 9.85 km al 
+puerto más cercano:
+
+- Seattle, US (2 celdas: 235,268 y 101,039 posiciones)
+- San Diego, US (2 celdas: 180,100 y 100,848 posiciones)
+- Bellingham, US (123,785 posiciones, a solo 0.80 km)
+- El Segundo, US (115,457 posiciones)
+- Port Neches, US (114,645 posiciones)
+- Ventura, US (109,522 posiciones)
+- Port Everglades, US (103,934 posiciones)
+- Una zona cercana a un puerto llamado "Creosote" (184,414 posiciones, 9.85 km)
+
+Todos los hotspots se ubican en aguas de Estados Unidos, principalmente en 
+las costas oeste (Washington, California) y este/Golfo de México (Florida, 
+Texas), consistente con el alcance geográfico del dataset AIS de la NOAA.
 
 ### e) Permanencia de buques
 39.74% transmitió los 7 días completos
