@@ -138,22 +138,14 @@ oceanwatch (catálogo)
 
 ### Ejecución
 
-1. Descargar el notebook:
-   ```bash
-   git clone https://github.com/[tu-usuario]/oceanwatch-project.git
-   cd oceanwatch-project
-   ```
-
-2. Preparar archivo WorldPortIndex.csv (para Punto 3):
-   - Descargar WorldPortIndex.csv desde el repo (por alguna razon no se sube a data bricks entonces toca ponerlo por aparte en el workspace)
-   - Subir a Databricks y copiar la ruta para el punto 3. d.
-
+1. Descargar el notebook
+2. 
 3. Importar en Databricks:
    - Abre Databricks workspace
    - Click en "Import" → "File"
    - Selecciona Entrega_1.ipynb
 
-4. Ejecutar:
+3. Ejecutar:
    - Ejecuta celdas en orden (Shift+Enter)
    - Punto 1 descarga datos automáticamente
    - Punto 4 requiere que Punto 1 se ejecute primero
