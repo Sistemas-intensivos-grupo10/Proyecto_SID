@@ -1,0 +1,98 @@
+resources:
+  jobs:
+    oceanwatch_pipeline_diario:
+      name: oceanwatch_pipeline_diario
+      tasks:
+        - task_key: landing
+          notebook_task:
+            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
+              2/01_landing
+            base_parameters:
+              fecha: "{{job.parameters.fecha_feed}}"
+            source: WORKSPACE
+          max_retries: 3
+          min_retry_interval_millis: 120000
+          retry_on_timeout: true
+          disable_auto_optimization: true
+          timeout_seconds: 1800
+          health:
+            rules:
+              - metric: RUN_DURATION_SECONDS
+                op: GREATER_THAN
+                value: 900
+        - task_key: bronze
+          depends_on:
+            - task_key: landing
+          notebook_task:
+            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
+              2/02_bronze
+            source: WORKSPACE
+          max_retries: 2
+          min_retry_interval_millis: 60000
+          disable_auto_optimization: true
+          timeout_seconds: 3600
+          health:
+            rules:
+              - metric: RUN_DURATION_SECONDS
+                op: GREATER_THAN
+                value: 1800
+        - task_key: silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
+              2/04_silver
+            source: WORKSPACE
+          max_retries: 2
+          min_retry_interval_millis: 60000
+          disable_auto_optimization: true
+          timeout_seconds: 3600
+          health:
+            rules:
+              - metric: RUN_DURATION_SECONDS
+                op: GREATER_THAN
+                value: 1800
+        - task_key: quality_gate
+          depends_on:
+            - task_key: silver
+          notebook_task:
+            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
+              2/06_quality_gate
+            base_parameters:
+              fecha: "{{tasks.landing.values.fecha}}"
+              max_cuarentena_pct: "1.0"
+            source: WORKSPACE
+          min_retry_interval_millis: 900000
+          disable_auto_optimization: true
+          timeout_seconds: 900
+          health:
+            rules:
+              - metric: RUN_DURATION_SECONDS
+                op: GREATER_THAN
+                value: 300
+        - task_key: gold
+          depends_on:
+            - task_key: quality_gate
+          notebook_task:
+            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
+              2/05_gold
+            base_parameters:
+              fecha: "{{tasks.landing.values.fecha}}"
+            source: WORKSPACE
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          disable_auto_optimization: true
+          timeout_seconds: 3600
+          health:
+            rules:
+              - metric: RUN_DURATION_SECONDS
+                op: GREATER_THAN
+                value: 1800
+      queue:
+        enabled: true
+      parameters:
+        - name: catalog
+          default: oceanwatch_e2
+        - name: fecha_feed
+          default: auto
+      performance_target: PERFORMANCE_OPTIMIZED
