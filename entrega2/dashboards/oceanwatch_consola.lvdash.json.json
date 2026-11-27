@@ -1,0 +1,882 @@
+{
+  "datasets": [
+    {
+      "name": "a13a9d57",
+      "displayName": "kpis_dia",
+      "queryLines": [
+        "SELECT\r\n",
+        "  (SELECT COUNT(DISTINCT mmsi) FROM clase10.equipo10.gold_trayectorias_diarias WHERE fecha = :fecha) AS buques_activos,\r\n",
+        "  (SELECT COUNT(DISTINCT mmsi) FROM clase10.equipo10.gold_presencia_puertos   WHERE fecha = :fecha) AS buques_en_puerto,\r\n",
+        "  (SELECT SUM(valor) FROM clase10.equipo10.ops_calidad_metricas WHERE fecha = :fecha AND metrica = 'filas_entrada') AS posiciones,\r\n",
+        "  (SELECT ROUND(100 * SUM(CASE WHEN metrica = 'cuarentena' THEN valor END)\r\n",
+        "                    / SUM(CASE WHEN metrica = 'filas_entrada' THEN valor END), 3)\r\n",
+        "     FROM clase10.equipo10.ops_calidad_metricas WHERE fecha = :fecha) AS pct_cuarentena"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "2023-06-08"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "0f2e76dd",
+      "displayName": "mapa_trafico",
+      "queryLines": [
+        "SELECT h3_r7, FIRST(lat) AS lat, FIRST(lon) AS lon,\r\n",
+        "       SUM(posiciones) AS posiciones, MAX(buques) AS buques_hora_pico\r\n",
+        "FROM clase10.equipo10.gold_trafico_celda_hora\r\n",
+        "WHERE fecha = :fecha\r\n",
+        "GROUP BY h3_r7\r\n",
+        "HAVING SUM(posiciones) >= 50"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "2023-06-08"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "74299b68",
+      "displayName": "ranking_puertos",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT\n",
+        "    p.puerto,\n",
+        "    p.pais,\n",
+        "    p.mmsi,\n",
+        "    p.horas_en_puerto,\n",
+        "    COALESCE(d.categoria, 'Sin tipo') AS categoria\n",
+        "  FROM\n",
+        "    clase10.equipo10.gold_presencia_puertos p\n",
+        "      LEFT JOIN clase10.equipo10.gold_dim_tipo_buque d\n",
+        "        ON p.vessel_type BETWEEN d.codigo_min AND d.codigo_max\n",
+        "  WHERE\n",
+        "    p.fecha = :fecha\n",
+        "),\n",
+        "top15 AS (\n",
+        "  SELECT\n",
+        "    puerto,\n",
+        "    COUNT(DISTINCT mmsi) AS buques_total\n",
+        "  FROM\n",
+        "    base\n",
+        "  GROUP BY\n",
+        "    puerto\n",
+        "  ORDER BY\n",
+        "    buques_total DESC\n",
+        "  LIMIT 15\n",
+        ")\n",
+        "SELECT\n",
+        "  b.puerto,\n",
+        "  MIN(b.pais) AS pais,\n",
+        "  b.categoria,\n",
+        "  COUNT(DISTINCT b.mmsi) AS buques,\n",
+        "  ROUND(SUM(b.horas_en_puerto), 1) AS horas_buque\n",
+        "FROM\n",
+        "  base b\n",
+        "    JOIN top15 t\n",
+        "      ON b.puerto = t.puerto\n",
+        "GROUP BY\n",
+        "  b.puerto,\n",
+        "  b.categoria\n",
+        "ORDER BY\n",
+        "  MAX(t.buques_total) DESC,\n",
+        "  b.categoria"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "2023-06-08"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6f07d0fc",
+      "displayName": "buques_en_puerto",
+      "queryLines": [
+        "SELECT p.puerto, p.mmsi, p.vessel_name, COALESCE(d.categoria, 'Sin tipo') AS categoria,\r\n",
+        "       p.primera_posicion, p.ultima_posicion, p.horas_en_puerto\r\n",
+        "FROM clase10.equipo10.gold_presencia_puertos p\r\n",
+        "LEFT JOIN clase10.equipo10.gold_dim_tipo_buque d ON p.vessel_type BETWEEN d.codigo_min AND d.codigo_max\r\n",
+        "WHERE p.fecha = :fecha\r\n",
+        "ORDER BY p.horas_en_puerto DESC"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "2023-06-08"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "d8901100",
+      "displayName": "anomalias_dia",
+      "queryLines": [
+        "SELECT 'Salto de posición (MMSI posiblemente compartido)' AS tipo, mmsi, vessel_name,\r\n",
+        "       saltos_anomalos AS eventos, v_impl_max_kn AS detalle\r\n",
+        "FROM clase10.equipo10.gold_trayectorias_diarias\r\n",
+        "WHERE fecha = :fecha AND saltos_anomalos > 0\r\n",
+        "UNION ALL\r\n",
+        "SELECT CONCAT('Calidad: ', REPLACE(metrica, 'cuarentena_', '')), NULL, NULL, valor, NULL\r\n",
+        "FROM clase10.equipo10.ops_calidad_metricas\r\n",
+        "WHERE fecha = :fecha AND metrica LIKE 'cuarentena\\\\_%' AND valor > 0\r\n",
+        "ORDER BY eventos DESC"
+      ],
+      "parameters": [
+        {
+          "displayName": "fecha",
+          "keyword": "fecha",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "2023-06-08"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "3e056064",
+      "displayName": "Untitled page",
+      "layout": [
+        {
+          "widget": {
+            "name": "kpi_buques_activos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a13a9d57",
+                  "fields": [
+                    {
+                      "name": "max(buques_activos)",
+                      "expression": "MAX(`buques_activos`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Buques activos"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "max(buques_activos)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_buques_en_puerto",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a13a9d57",
+                  "fields": [
+                    {
+                      "name": "max(buques_en_puerto)",
+                      "expression": "MAX(`buques_en_puerto`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Buques en puerto"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "max(buques_en_puerto)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_posiciones",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a13a9d57",
+                  "fields": [
+                    {
+                      "name": "max(posiciones)",
+                      "expression": "MAX(`posiciones`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Posiciones del día"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "max(posiciones)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 0,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_pct_cuarentena",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a13a9d57",
+                  "fields": [
+                    {
+                      "name": "max(pct_cuarentena)",
+                      "expression": "MAX(`pct_cuarentena`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "% cuarentena"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "max(pct_cuarentena)",
+                  "format": {
+                    "type": "number-plain",
+                    "abbreviation": "none",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 3
+                    }
+                  },
+                  "formatTemplate": "{{ @formatted }}%"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 0,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "mapa_trafico",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0f2e76dd",
+                  "fields": [
+                    {
+                      "name": "posiciones",
+                      "expression": "`posiciones`"
+                    },
+                    {
+                      "name": "lat",
+                      "expression": "`lat`"
+                    },
+                    {
+                      "name": "lon",
+                      "expression": "`lon`"
+                    },
+                    {
+                      "name": "buques_hora_pico",
+                      "expression": "`buques_hora_pico`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Intensidad de tráfico por celda H3"
+              },
+              "version": 2,
+              "widgetType": "symbol-map",
+              "encodings": {
+                "coordinates": {
+                  "coordinateType": "longitude-latitude",
+                  "latitude": {
+                    "fieldName": "lat"
+                  },
+                  "longitude": {
+                    "fieldName": "lon"
+                  }
+                },
+                "color": {
+                  "fieldName": "posiciones",
+                  "scale": {
+                    "type": "quantitative",
+                    "fn": {
+                      "type": "symlog"
+                    },
+                    "colorRamp": {
+                      "mode": "scheme",
+                      "scheme": "orangered"
+                    }
+                  }
+                },
+                "size": {
+                  "fieldName": "buques_hora_pico",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 12,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "ranking_puertos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "74299b68",
+                  "fields": [
+                    {
+                      "name": "categoria",
+                      "expression": "`categoria`"
+                    },
+                    {
+                      "name": "puerto",
+                      "expression": "`puerto`"
+                    },
+                    {
+                      "name": "sum(buques)",
+                      "expression": "SUM(`buques`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Ranking de puertos"
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "puerto",
+                  "scale": {
+                    "type": "categorical",
+                    "categorySize": {
+                      "type": "number-of-categories",
+                      "number": 15
+                    },
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(buques)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "categoria",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "tabla_buques_puerto",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "6f07d0fc",
+                  "fields": [
+                    {
+                      "name": "puerto",
+                      "expression": "`puerto`"
+                    },
+                    {
+                      "name": "vessel_name",
+                      "expression": "`vessel_name`"
+                    },
+                    {
+                      "name": "categoria",
+                      "expression": "`categoria`"
+                    },
+                    {
+                      "name": "horas_en_puerto",
+                      "expression": "`horas_en_puerto`"
+                    },
+                    {
+                      "name": "primera_posicion",
+                      "expression": "`primera_posicion`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Buques en puerto"
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "puerto"
+                  },
+                  {
+                    "fieldName": "vessel_name"
+                  },
+                  {
+                    "fieldName": "categoria"
+                  },
+                  {
+                    "fieldName": "horas_en_puerto",
+                    "format": {
+                      "type": "number-plain",
+                      "abbreviation": "none",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "primera_posicion"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 11,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "tabla_anomalias",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "d8901100",
+                  "fields": [
+                    {
+                      "name": "tipo",
+                      "expression": "`tipo`"
+                    },
+                    {
+                      "name": "mmsi",
+                      "expression": "`mmsi`"
+                    },
+                    {
+                      "name": "vessel_name",
+                      "expression": "`vessel_name`"
+                    },
+                    {
+                      "name": "eventos",
+                      "expression": "`eventos`"
+                    },
+                    {
+                      "name": "detalle",
+                      "expression": "`detalle`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Anomalías del día"
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "tipo"
+                  },
+                  {
+                    "fieldName": "mmsi"
+                  },
+                  {
+                    "fieldName": "vessel_name"
+                  },
+                  {
+                    "fieldName": "eventos"
+                  },
+                  {
+                    "fieldName": "detalle"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 19,
+            "width": 12,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "global_filters",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "categoria_filter",
+            "queries": [
+              {
+                "name": "dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f10216588fcf3d5cb4616aa2_categoria",
+                "query": {
+                  "datasetName": "74299b68",
+                  "fields": [
+                    {
+                      "name": "categoria",
+                      "expression": "`categoria`"
+                    },
+                    {
+                      "name": "categoria_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f6f7192396f8647f32358545_categoria",
+                "query": {
+                  "datasetName": "6f07d0fc",
+                  "fields": [
+                    {
+                      "name": "categoria",
+                      "expression": "`categoria`"
+                    },
+                    {
+                      "name": "categoria_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Categoría de buque"
+              },
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "categoria",
+                    "queryName": "dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f10216588fcf3d5cb4616aa2_categoria"
+                  },
+                  {
+                    "fieldName": "categoria",
+                    "queryName": "dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f6f7192396f8647f32358545_categoria"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "fecha_picker",
+            "queries": [
+              {
+                "name": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920c90417708a0365584c464565_fecha",
+                "query": {
+                  "datasetName": "a13a9d57",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920e7481a0daa4dc4298c15c6d5_fecha",
+                "query": {
+                  "datasetName": "0f2e76dd",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f10216588fcf3d5cb4616aa2_fecha",
+                "query": {
+                  "datasetName": "74299b68",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f6f7192396f8647f32358545_fecha",
+                "query": {
+                  "datasetName": "6f07d0fc",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920fc5916f48f5baca3ce64b6e3_fecha",
+                "query": {
+                  "datasetName": "d8901100",
+                  "parameters": [
+                    {
+                      "name": "fecha",
+                      "keyword": "fecha"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "selection": {
+                "defaultSelection": {
+                  "values": {
+                    "dataType": "DATE",
+                    "values": [
+                      {
+                        "value": "2023-06-08"
+                      }
+                    ]
+                  }
+                }
+              },
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Fecha"
+              },
+              "widgetType": "filter-date-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920c90417708a0365584c464565_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920e7481a0daa4dc4298c15c6d5_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f10216588fcf3d5cb4616aa2_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920f6f7192396f8647f32358545_fecha"
+                  },
+                  {
+                    "parameterName": "fecha",
+                    "queryName": "parameter_dashboards/01f1e920c09713d0950c7c2dfb61ac84/datasets/01f1e920fc5916f48f5baca3ce64b6e3_fecha"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
