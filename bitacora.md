@@ -148,4 +148,4 @@ El modelo se registra en `proyecto.equipo10_ml`, un esquema dedicado a ML y prop
 
 ---
 
-Última actualización: 26 de Noviembre de 2026
+Última actualización: 27 de Noviembre de 2026
