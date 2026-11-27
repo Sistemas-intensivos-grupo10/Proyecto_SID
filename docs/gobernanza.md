@@ -76,16 +76,16 @@ Las capturas son de la tabla `clase10.equipo10.gold_trayectorias_diarias` en Cat
 
 **Permisos por rol.** Pestaña Permissions de la tabla: se ven `mine-group10`, `jd.ninom1`, `am.ochoat` y `m.galarza` con sus permisos.
 
-![Permisos de la tabla](img/permisos_gold.png)
+![Permisos de la tabla](img/permisos_gold.jpeg)
 
 **Contrato de datos.** Pestaña Overview de la tabla: descripción de la tabla y comentarios de cada columna.
 
-![Contrato en la tabla](img/contrato_overview.png)
+![Contrato en la tabla](img/contrato_overview.jpeg)
 
 **Linaje.** Pestaña Lineage, grafo expandido: muestra de qué tablas viene la tabla de oro, desde bronce.
 
-![Linaje de la tabla](img/linaje_gold.png)
+![Linaje de la tabla](img/linaje_gold.jpeg)
 
 La misma información en lista, con los notebooks, el job y el dashboard que escriben o leen la tabla:
 
-![Linaje en lista](img/linaje_gold_lista.png)
+![Linaje en lista](img/linaje_gold_lista.jpeg)
