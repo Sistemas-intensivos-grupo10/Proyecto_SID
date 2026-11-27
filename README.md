@@ -1,258 +1,194 @@
-# OceanWatch Analytics - Sistemas Intensivos en Datos
+# OceanWatch Analytics · Entrega 2 · Pipeline diario
 
-**Proyecto Final Entrega 1 | MINE4213 | Universidad de los Andes**
+**Proyecto Final Entrega 2 | MINE4213 | Universidad de los Andes**
 
-Análisis de tráfico marítimo utilizando datos AIS de NOAA Marine Cadastre con optimización de almacenamiento y gobernanza de datos.
+Pipeline diario de ingeniería de datos sobre posiciones AIS de buques (NOAA Marine Cadastre): ingesta en streaming, capas bronce, plata y oro con calidad como compuerta, orquestación, tablero, gobernanza y un modelo de detección de anomalías con MLflow.
 
 ---
 
 ## Descripción
 
-OceanWatch Analytics es un pipeline end-to-end de análisis de datos marítimos que demuestra:
+```
+NOAA (zip diario) → landing → bronce → plata → compuerta de calidad → oro → tablero
+                                          ↓                            ↓
+                                     cuarentena + métricas        modelo de anomalías (MLflow)
+```
 
-- Ingesta de datos desde NOAA Marine Cadastre con verificación de integridad
-- Exploración y perfilamiento de 60M+ posiciones AIS
-- Análisis de negocio respondiendo 5 preguntas clave sobre tráfico marítimo
-- Optimización de almacenamiento con Delta Lake y particionamiento jerárquico
-- Gobernanza de datos con Unity Catalog en Databricks
-
-### Datos
-- Fuente: NOAA Marine Cadastre - Automatic Identification System (AIS)
-- URL: https://hub.marinecadastre.gov/pages/vessel/
-- Período: 1-7 de junio de 2023 (7 días)
-- Volumen: ~60.5 millones de posiciones de buques
-- Cobertura: Tráfico marítimo mundial
+- **Fuente:** AIS Data de Marine Cadastre (NOAA), un zip por día con un CSV de posiciones.
+- **Periodo procesado:** 1 al 12 de junio de 2023 (12 días, y el job suma uno más en cada ejecución).
+- **Plataforma:** Databricks, Unity Catalog, Delta Lake.
+- **Dónde vive:** catálogo `clase10`, esquema `equipo10`. Las tablas llevan el prefijo de su capa (`bronze_`, `silver_`, `gold_`, `ops_`, `ml_`).
 
 ---
 
 ## Puntos de la Entrega
 
-### Punto 1: Ingesta de Datos (15%)
-- Descarga automática de 7 archivos ZIP desde NOAA
-- Verificación de integridad (CRC, tamaño esperado)
-- Extracción y lectura con schema definido
-- Resultado: 60,533,559 filas cargadas en Spark
+### Punto 1: Ingesta en streaming (15 %)
+- `01_landing` descarga el zip del día y deja el CSV completo en el volume que vigila Auto Loader. Es idempotente.
+- `02_bronze` lee con Auto Loader (`cloudFiles`), guarda todo como texto (crudo, inmutable) y agrega el archivo de origen y la hora de ingesta. El checkpoint garantiza que cada archivo se procese una sola vez.
+- **Duplicados:** en plata se elimina uno por buque y timestamp, y un `MERGE` que solo inserta evita repetir registros ya cargados.
+- **Tolerancia a fallos:** `02b_demo_falla` inyecta una falla al procesar un archivo, relanza con el mismo checkpoint y concilia las filas de bronce contra las líneas de los CSV.
 
-### Punto 2: Exploración & Perfilamiento (20%)
-- Estadísticas generales (filas, columnas, tipos)
-- Análisis de valores nulos
-- Distribuciones de variables categóricas
-- Rangos de valores numéricos
-- Detección de anomalías (coordenadas inválidas, velocidades imposibles)
-- Conclusión: Datos limpios, 99.2% válidos
+**Evidencia:** salida de `02b_demo_falla` con la falla simulada, la recuperación y la conciliación.
 
-### Punto 3: Preguntas de Negocio (25%)
+![Tolerancia a fallos](docs/img/ingesta_falla.png)
 
-### a) Actividad diaria
-Conteo exacto vs aproximado (HyperLogLog++)
-Rango real: 19,615 - 21,153 buques únicos por día
+### Punto 2: Capas con calidad como compuerta (15 %)
+- **Bronce:** crudo, sin transformar.
+- **Plata** (`04_silver`): aplica las compuertas de calidad. Un registro va a **cuarentena**, con su causa, si el MMSI está mal formado, la fecha es inválida, las coordenadas están fuera de rango, la posición cae en tierra (máscara H3 de `03_land_mask`) o la velocidad supera 50 nudos. Otros problemas (rumbo, IMO, valores "sin dato") quedan como marcas sin descartar el registro. Todo se resume en la tabla de métricas `ops_calidad_metricas`.
+- **Compuerta** (`06_quality_gate`): detiene el pipeline si la cuarentena del día supera 1 %, si no hay filas de entrada o si plata queda vacía. Cada evaluación queda en `ops_quality_gate_log`.
+- **Oro** (`05_gold`): `gold_trafico_celda_hora` (matriz de tráfico por celda H3 y hora), `gold_trayectorias_diarias` (recorrido de cada buque por día), `gold_presencia_puertos` (buques detenidos a menos de 5 km de un puerto) y `gold_dim_tipo_buque`.
+- Un registro no llega a oro si no pasa las compuertas.
 
-### b) Tráfico por tipo de buque
-Remolcadores (~33%) y embarcaciones de placer (~26%) lideran, no carga/tanqueros
-Velocidades promedio entre 1.6 y 6.4 nudos (carga y tanqueros con las más altas)
+**Evidencia:** salida de `04_silver` con la conciliación (bronce = plata + cuarentena + duplicados) y la cuarentena por causa.
 
-### c) Top 10 buques por distancia recorrida
-Cálculo Haversine entre posiciones consecutivas
-Rango obtenido: 249,765 - 7,931,112 km por buque
+![Calidad en plata](docs/img/calidad_silver.png)
 
-### d) Concentración espacial (Hotspots)
-Grilla H3 resolución 8, top 10 celdas por número de posiciones.
+### Punto 3: Orquestación (20 %)
+Job `oceanwatch_pipeline_diario`, con seis tareas encadenadas:
 
-Dado que el cruce exacto por celda H3 no coincidía con las coordenadas 
-oficiales de los puertos, se calculó el puerto más cercano por distancia 
-Haversine para cada celda. Las 10 celdas de mayor tráfico corresponden 
-efectivamente a zonas portuarias, con distancias entre 0.8 y 9.85 km al 
-puerto más cercano:
+`landing → bronze → silver → quality_gate → gold → ml_anomalias`
 
-- Seattle, US (2 celdas: 235,268 y 101,039 posiciones)
-- San Diego, US (2 celdas: 180,100 y 100,848 posiciones)
-- Bellingham, US (123,785 posiciones, a solo 0.80 km)
-- El Segundo, US (115,457 posiciones)
-- Port Neches, US (114,645 posiciones)
-- Ventura, US (109,522 posiciones)
-- Port Everglades, US (103,934 posiciones)
-- Una zona cercana a un puerto llamado "Creosote" (184,414 posiciones, 9.85 km)
+- **Parámetros:** `fecha_feed` (`auto` toma el día siguiente al último cargado). La fecha resuelta en `landing` se pasa a las demás tareas.
+- **Reintentos:** landing 3, bronce 2, plata 2, oro 1, ML 1.
+- **Monitoreo:** alerta si una tarea supera su duración esperada, tiempos máximos por tarea y correo si el job falla.
+- **Ejecución programada:** todos los días a las 6:00 a. m. (hora de Bogotá), y también cuando llegan archivos nuevos al volume de entrada.
+- La definición completa está en `entrega2/jobs/oceanwatch_pipeline_diario.yml`.
 
-Todos los hotspots se ubican en aguas de Estados Unidos, principalmente en 
-las costas oeste (Washington, California) y este/Golfo de México (Florida, 
-Texas), consistente con el alcance geográfico del dataset AIS de la NOAA.
+**Evidencia:** las seis tareas con sus dependencias.
 
-### e) Permanencia de buques
-39.74% transmitió los 7 días completos
-18.81% fueron visitantes de 1 solo día
-Ubicación de visitantes por zona
+![Tareas del job](docs/img/job_tareas.png)
 
-### Punto 4: Almacenamiento Óptimo (25%)
+El schedule configurado.
 
-**Estrategia**: Delta Lake con particionamiento jerárquico
+![Schedule del job](docs/img/job_schedule.png)
 
-```
-Particionamiento: date → lat_bucket → lon_bucket
-Compresión: Snappy (codec por defecto)
-Propósito: Análisis espacial de concentración de tráfico
-```
+Una corrida terminada correctamente.
 
-**Métricas implementadas**:
+![Corrida del job](docs/img/job_corrida.png)
 
-| Métrica | Resultado |
-|---------|-----------|
-| Compresión | CSV 6.482 GB → Delta ~3-4 GB (30-50% reducción) |
-| I/O Pruning | 3 niveles de particionamiento activos |
-| Speed Benchmark | Sin optimizar: 17.7s → Con particionamiento: 1.1s → 15.9x más rápido |
-| Query Plans | EXPLAIN muestra partition pruning efectivo |
-| Delta Stats | Tabla optimizada con 22 columnas, 7 días de datos |
+### Punto 4: Consola de visualización (15 %)
+Tablero **OceanWatch — Tráfico marítimo**, alimentado por la capa oro y las métricas de calidad:
+- Indicadores del día: buques activos, buques en puerto, posiciones y % de cuarentena.
+- Mapa de intensidad de tráfico por celda H3.
+- Ranking de puertos (top 15 por buques) con filtro por categoría de buque.
+- Buques en puerto y anomalías del día (calidad y saltos de posición).
+- Filtro por fecha.
 
-### Punto 5: Gobernanza Básica (10%)
+**Evidencia:** el tablero publicado con una fecha elegida.
 
-**Estructura Unity Catalog**:
-```
-oceanwatch (catálogo)
-├── raw (esquema con datos crudos)
-└── processed (esquema con datos optimizados)
-    └── data_points_optimized (tabla Delta)
-        ├── v_daily_traffic_summary (vista)
-        ├── v_traffic_by_vessel_type (vista)
-        └── v_spatial_concentration (vista)
-```
+![Tablero OceanWatch](docs/img/dashboard.png)
 
-**Metadata**: 15 propiedades de tabla
-- Descripción, fuente, URL
-- Frecuencia de actualización, formato de almacenamiento
-- Rango de datos (7 días), volumen (150M filas)
-- Alcance geográfico, notas de calidad
-- Casos de uso primario y secundario
+### Punto 5: Gobernanza (10 %)
+Tres roles (ingenieros, científicos de datos y analistas) con permisos por tabla, contrato de datos de la capa oro y linaje de Unity Catalog.
+- [docs/gobernanza.md](docs/gobernanza.md): permisos, quién tiene cada rol, cómo se aplicó y evidencia.
+- [docs/contrato_datos_oro.md](docs/contrato_datos_oro.md): contrato de las cuatro tablas de oro.
+- Notebook `07_gobernanza`.
 
-**Documentación**: 21 columnas comentadas con:
-- Significado y tipo de dato
-- Rango válido y unidades
-- Referencias técnicas (ITU-R M.1371)
+### Punto 6: ML con MLflow (10 %)
+Detección de anomalías de velocidad (`08_ml_anomalias`):
+- **Características** por buque y día: velocidad promedio, desviación, máxima, percentil 95, cambio brusco de velocidad, fracción detenido y velocidad implícita.
+- **Modelo:** Isolation Forest con semilla fija y 1 % de anomalías esperadas.
+- **MLflow:** el experimento registra parámetros, métricas y la versión de los datos. El modelo queda registrado en Unity Catalog como `proyecto.equipo10_ml.modelo_anomalias_velocidad`, con el alias `champion`.
+- **Salida:** `ml_anomalias_velocidad`, con los buques atípicos de cada día. Corre como última tarea del job.
+- El objetivo es demostrar ML dentro de un pipeline reproducible, no maximizar la precisión.
 
-**Vistas operacionales**:
-1. v_daily_traffic_summary - Resumen diario para dashboards
-2. v_traffic_by_vessel_type - Composición de flota por tipo
-3. v_spatial_concentration - Hotspots geográficos de tráfico
+**Evidencia:** el experimento en MLflow, con parámetros y métricas.
+
+![Experimento en MLflow](docs/img/mlflow_experimento.png)
+
+El modelo registrado en Unity Catalog, con sus versiones y el alias `champion`.
+
+![Modelo registrado](docs/img/modelo_registrado.png)
+
+**Cómo leer el resultado.** El modelo marca el 1 % de buque-días con el perfil de velocidad más atípico. Coincide con solo el 27 % de los saltos detectados por regla (30 de 112), porque la regla detecta errores de posición y el modelo detecta comportamiento de velocidad: son señales complementarias. Los casos más extremos del modelo son lanchas rápidas de recreo y de fuerza pública, con 45 a 49 nudos y sin saltos de posición: atípicas pero plausibles. Sin etiquetas no se puede validar cuáles son errores y cuáles son comportamiento real.
+
+### Punto 7: Repositorio y bitácora (5 %)
+- Código en `entrega2/notebooks`, definición del job en `entrega2/jobs` y tablero en `entrega2/dashboards`.
+- Bitácora de la entrega: [bitacora.md](bitacora.md).
 
 ---
 
-## Cómo Usar
+## Resultados principales
 
-### Ejecución
-
-1. Descargar el notebook
-2. 
-3. Importar en Databricks:
-   - Abre Databricks workspace
-   - Click en "Import" → "File"
-   - Selecciona Entrega_1.ipynb
-
-3. Ejecutar:
-   - Ejecuta celdas en orden (Shift+Enter)
-   - Punto 1 descarga datos automáticamente
-   - Punto 4 requiere que Punto 1 se ejecute primero
-   - Punto 5 requiere que Punto 4 se ejecute primero
+- **Datos procesados:** 12 días (1 al 12 de junio de 2023), con entre 7,8 y 9,1 millones de posiciones de entrada por día.
+- **Calidad:** la cuarentena fue de entre 0,033 % y 0,073 % de las filas por día, muy por debajo del umbral de 1 %. La compuerta dio OK en los 12 días.
+- **Oro:** entre 19.500 y 21.700 buques por día en las trayectorias diarias.
+- **ML:** 235.000 buque-días puntuados con la misma versión del modelo, de los cuales el 1 % queda marcado como atípico.
 
 ---
 
-## Resultados Principales
+## Notebooks
 
-### Datos Procesados
-- 60.5M filas de posiciones AIS
-- 60K+ buques únicos identificados
-- 7 días de cobertura global
-- 150M puntos de tráfico después de transformación
+| Notebook | Qué hace |
+|---|---|
+| `00_config` | Detecta el workspace y arma los nombres de tablas y volúmenes |
+| `00_setup` | Crea la estructura (esquemas y volúmenes) |
+| `01_landing` | Descarga el zip del día |
+| `02_bronze` | Auto Loader hacia bronce |
+| `02b_demo_falla` | Demostración de tolerancia a fallos |
+| `02c_profiling_bronze` | Perfilamiento de la capa cruda |
+| `03_land_mask` | Marca las celdas H3 que son tierra |
+| `04_silver` | Compuertas de calidad, cuarentena y métricas |
+| `05_gold` | Tablas de oro |
+| `06_quality_gate` | Corta el pipeline si la calidad no alcanza |
+| `07_gobernanza` | Permisos por rol y contrato de datos |
+| `08_ml_anomalias` | Modelo de anomalías con MLflow |
 
-### Optimización Lograda
-- 15.9x speedup en queries espaciales con particionamiento
-- 30-50% reducción en tamaño de almacenamiento (compresión Snappy)
-- 3 niveles de partition pruning activos automáticamente
-- Zero downtime con Delta Lake ACID transactions
+## Cómo ejecutar
 
-### Gobernanza Implementada
-- Catálogo Unity Catalog con 2 esquemas
-- 15 propiedades de tabla documentadas
-- 21 columnas con comentarios descriptivos
-- 3 vistas operacionales para casos de uso
+1. **Una sola vez:** `00_setup` (estructura), `03_land_mask` (máscara de tierra) y `07_gobernanza` (permisos y contrato).
+2. **Cada día:** el job `oceanwatch_pipeline_diario`, que descarga el día siguiente y recorre las seis tareas. También se puede lanzar a mano.
+3. Los notebooks usan `00_config`, así que corren igual en el workspace del curso (`clase10.equipo10`) y en uno propio (`oceanwatch_e2`).
 
----
+## Guía de evidencias
 
-## Hallazgos Clave
+Las capturas se guardan en `docs/img/` con el nombre indicado. Para cada una: dónde sacarla y qué explicar.
 
-1. **Concentración de tráfico**: El dataset corresponde a datos AIS de la NOAA 
-   para aguas de Estados Unidos (1 al 7 de junio de 2023), por lo que los 
-   hotspots se ubican en aguas jurisdiccionales estadounidenses, principalmente 
-   en el Golfo de México y zonas costeras del este del país.
+### Punto 1 · `ingesta_falla.png`
+- **Dónde:** notebook `02b_demo_falla` (ejecutarlo o abrir su última ejecución). Capturar las celdas "antes de la falla", "después de la falla", "después de recuperar" y la tabla de conciliación.
+- **Qué explicar:** la falla aborta el lote sin guardar filas parciales; al relanzar con el mismo checkpoint solo se procesa lo pendiente; y las filas de bronce coinciden con las líneas de cada CSV (la columna `diferencia` debe ser 0).
 
-2. **Composición de flota**: Dominada por:
-   - Remolcadores (códigos 31 y 52 combinados): ~33%
-   - Embarcaciones de placer: ~26%
-   - Pasajeros: ~8.5%
-   - Pesca: ~7.1%
-   - Carga: ~6.8%
-   - Tanqueros: ~3.2%
-   
-   La flota está dominada por remolcadores y embarcaciones de placer, no por 
-   carga/tanqueros, consistente con tráfico costero y portuario de EE.UU.
+### Punto 2 · `calidad_silver.png`
+- **Dónde:** notebook `04_silver`, última celda. Capturar la línea "bronce = plata + cuarentena + duplicados" y las tablas de cuarentena por causa y de métricas.
+- **Qué explicar:** no se pierde ninguna fila (diferencia 0) y cada registro rechazado tiene una causa documentada.
 
-3. **Patrones de movimiento**:
-   - 39.74% de buques transmiten durante toda la semana
-   - 18.81% son visitantes ocasionales (1 día)
-   - Velocidad promedio por tipo: entre 1.6 y 6.4 nudos (carga y tanqueros con 
-     las velocidades más altas, remolcadores y embarcaciones de placer las 
-     más bajas)
+### Punto 3 · `job_tareas.png`, `job_schedule.png`, `job_corrida.png`
+- **Dónde:** Jobs & Pipelines → `oceanwatch_pipeline_diario`.
+  - `job_tareas.png`: pestaña **Tasks**, con las seis tareas.
+  - `job_schedule.png`: panel derecho, **Schedules & triggers**.
+  - `job_corrida.png`: pestaña **Runs**, con una corrida terminada en verde (abrirla para ver el estado de cada tarea).
+- **Qué explicar:** el orden y las dependencias entre tareas, los reintentos y las alertas, el horario programado (6:00 a. m., hora de Bogotá) y que el pipeline completo terminó bien.
+- **Nota:** para mostrar una ejecución automática, la corrida debe haberse lanzado por el horario o por la llegada de archivos (en la pestaña Runs, la columna de disparador no debe decir "manual").
 
----
+### Punto 4 · `dashboard.png`
+- **Dónde:** Dashboards → **OceanWatch — Tráfico marítimo** (publicado). Elegir una fecha, por ejemplo 2023-06-10, y capturar la página completa.
+- **Qué explicar:** los indicadores del día, el mapa de intensidad por celda, el ranking de puertos con su filtro por categoría, los buques en puerto y las anomalías del día; todo sale de la capa oro y de las métricas de calidad.
 
-## Documentación Técnica
+### Punto 5 · `contrato_overview.png`, `permisos_gold.png`, `linaje_gold.png`, `linaje_gold_lista.png`
+- **Dónde:** Catalog → `clase10` → `equipo10` → `gold_trayectorias_diarias`.
+  - `contrato_overview.png`: pestaña **Overview**.
+  - `permisos_gold.png`: pestaña **Permissions**.
+  - `linaje_gold.png`: pestaña **Lineage** → **See lineage graph**, con las tablas de la izquierda expandidas.
+  - `linaje_gold_lista.png`: pestaña **Lineage**, vista de lista.
+- **Qué explicar:** está en [docs/gobernanza.md](docs/gobernanza.md): quién tiene cada rol, el contrato de la tabla y de dónde viene y a dónde va.
 
-### Tecnologías Utilizadas
-- Apache Spark - Procesamiento distribuido
-- Delta Lake - Almacenamiento ACID con versionado
-- Unity Catalog - Gobernanza y metadatos
-- Databricks - Plataforma (Free Edition)
-- Python - Orquestación y análisis
+### Punto 6 · `mlflow_experimento.png`, `modelo_registrado.png`
+- **Dónde:**
+  - `mlflow_experimento.png`: menú **Experiments** → `oceanwatch_anomalias_velocidad` → abrir una corrida, con sus parámetros y métricas a la vista.
+  - `modelo_registrado.png`: Catalog → `proyecto` → `equipo10_ml` → **Models** → `modelo_anomalias_velocidad`, con las versiones y el alias `champion`.
+- **Qué explicar:** el experimento registra la semilla, la contaminación esperada y la versión de los datos (reproducibilidad), y métricas como el porcentaje de anomalías; el modelo queda versionado y se carga por su alias desde el pipeline.
 
-### Decisiones Técnicas
+## Fuentes de datos
 
-**Por qué Delta Lake?**
-- ACID transactions (garantía de integridad)
-- Versionado automático (auditoría)
-- Compresión eficiente (Snappy)
-- Schema enforcement (validación)
-- Time travel (histórico)
-
-**Por qué particionamiento jerárquico?**
-- Queries típicas filtran por fecha + zona geográfica
-- 3 niveles = partition pruning máximo
-- I/O reducido en 15.9x para consultas espaciales
-- Escalable a más datos sin cambios
-
-**Por qué Unity Catalog?**
-- Gobernanza centralizada
-- Metadatos consistentes
-- Auditoría automática
-- Seguridad por roles
-- Preparación para producción
-
----
-
-## Enlaces Útiles
-
-- Datos NOAA Marine Cadastre: https://hub.marinecadastre.gov/pages/vessel/
-- Documentación Databricks: https://docs.databricks.com/
-- Delta Lake Docs: https://docs.delta.io/
-- ITU-R M.1371 (AIS Standard): https://www.itu.int/rec/R-REC-M.1371/en
-- Grilla H3: https://h3geo.org/
-
----
+- **AIS Data, Marine Cadastre (NOAA):** https://hub.marinecadastre.gov/pages/vesseltraffic
+- **World Port Index:** catálogo de puertos del mismo dataset.
+- **Máscara de tierra:** Natural Earth (`ne_10m_land`, lagos y ríos).
 
 ## Autores
 
 Manuela Galarza - Joel David Niño - Andres Ochoa
 
-## Licencia
-
-Este proyecto es trabajo académico de la Universidad de los Andes.
-
 ---
 
-Última actualización: 25 de Septiembre de 2026
+Última actualización: 26 de Noviembre de 2026
