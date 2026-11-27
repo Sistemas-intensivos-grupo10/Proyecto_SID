@@ -1,4 +1,6 @@
-# Contrato de datos · Capa oro (`oceanwatch_e2.gold`)
+# Contrato de datos · Capa oro (`clase10.equipo10`, tablas `gold_*`)  
+
+En un workspace propio (Free Edition), las mismas tablas viven en `oceanwatch_e2.gold.<tabla>`; `00_config` elige el nombre según el workspace.
 
 Este documento dice qué entrega la capa oro, con qué garantías y qué pasa si algo cambia. Es lo que pueden asumir quienes consumen estas tablas (dashboard, ML, análisis).
 
@@ -7,7 +9,7 @@ Este documento dice qué entrega la capa oro, con qué garantías y qué pasa si
 | Tema | Acuerdo |
 |---|---|
 | Dueño | Equipo de ingeniería de datos de OceanWatch |
-| Origen | `silver.ais_posiciones` (solo registros que pasaron las compuertas de calidad) |
+| Origen | `silver_ais_posiciones` (solo registros que pasaron las compuertas de calidad) |
 | Frecuencia | Una carga por día, la ejecuta el job `oceanwatch_pipeline_diario` |
 | Actualización | Se reescribe solo la fecha procesada (`replaceWhere`). Correr dos veces el mismo día no duplica filas |
 | Zona horaria | Todas las horas están en UTC |
@@ -32,11 +34,11 @@ Un registro solo llega a oro si cumple todo lo siguiente:
 - Velocidad (`sog`) no mayor a 50 nudos.
 - Sin duplicados por buque y timestamp.
 
-Lo que no cumple va a `silver.ais_cuarentena` con su causa. Antes de cargar oro, `06_quality_gate` revisa que la cuarentena del día no pase de 1 %. Si pasa, oro no se actualiza.
+Lo que no cumple va a `silver_ais_cuarentena` con su causa. Antes de cargar oro, `06_quality_gate` revisa que la cuarentena del día no pase de 1 %. Si pasa, oro no se actualiza.
 
 ## Tablas
 
-### 1. `gold.trafico_celda_hora`
+### 1. `gold_trafico_celda_hora`
 Tráfico por celda espacial y hora.
 
 - **Granularidad:** una fila por `fecha` + `hora` + `h3_r7`.
@@ -52,7 +54,7 @@ Tráfico por celda espacial y hora.
 | `sog_promedio` | double | Velocidad promedio en nudos |
 | `lat`, `lon` | double | Centro de la celda |
 
-### 2. `gold.trayectorias_diarias`
+### 2. `gold_trayectorias_diarias`
 Resumen del recorrido de cada buque en el día. Solo incluye buques (MMSI entre 200000000 y 799999999).
 
 - **Granularidad:** una fila por `mmsi` + `fecha`.
@@ -73,7 +75,7 @@ Resumen del recorrido de cada buque en el día. Solo incluye buques (MMSI entre 
 | `vessel_name`, `vessel_type`, `length` | string, int, double | Datos del buque |
 | `horas_activo` | double | Horas entre la primera y la última posición |
 
-### 3. `gold.presencia_puertos`
+### 3. `gold_presencia_puertos`
 Buques detenidos (velocidad menor o igual a 1 nudo) dentro de 5 km de un puerto del World Port Index.
 
 - **Granularidad:** una fila por `fecha` + `mmsi` + `puerto`.
@@ -90,7 +92,7 @@ Buques detenidos (velocidad menor o igual a 1 nudo) dentro de 5 km de un puerto 
 | `vessel_name`, `vessel_type` | string, int | Datos del buque |
 | `lat_puerto`, `lon_puerto` | double | Ubicación del puerto |
 
-### 4. `gold.dim_tipo_buque`
+### 4. `gold_dim_tipo_buque`
 Tabla de apoyo con la categoría del buque según su código AIS.
 
 - **Granularidad:** una fila por rango de códigos.
@@ -113,7 +115,7 @@ Se une con `vessel_type BETWEEN codigo_min AND codigo_max`.
 | Consumidor | Tablas |
 |---|---|
 | Dashboard OceanWatch | las cuatro tablas |
-| Modelo de ML | `trayectorias_diarias`, `presencia_puertos` |
+| Modelo de ML (`08_ml_anomalias`) | `gold_trayectorias_diarias` (además lee `silver_ais_posiciones` para las características de velocidad) |
 
 ## Cambios al esquema
 
