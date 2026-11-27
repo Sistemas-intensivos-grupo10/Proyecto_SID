@@ -29,10 +29,6 @@ NOAA (zip diario) → landing → bronce → plata → compuerta de calidad → 
 - **Duplicados:** en plata se elimina uno por buque y timestamp, y un `MERGE` que solo inserta evita repetir registros ya cargados.
 - **Tolerancia a fallos:** `02b_demo_falla` inyecta una falla al procesar un archivo, relanza con el mismo checkpoint y concilia las filas de bronce contra las líneas de los CSV.
 
-**Evidencia:** salida de `02b_demo_falla` con la falla simulada, la recuperación y la conciliación.
-
-![Tolerancia a fallos](docs/img/ingesta_falla.png)
-
 ### Punto 2: Capas con calidad como compuerta (15 %)
 - **Bronce:** crudo, sin transformar.
 - **Plata** (`04_silver`): aplica las compuertas de calidad. Un registro va a **cuarentena**, con su causa, si el MMSI está mal formado, la fecha es inválida, las coordenadas están fuera de rango, la posición cae en tierra (máscara H3 de `03_land_mask`) o la velocidad supera 50 nudos. Otros problemas (rumbo, IMO, valores "sin dato") quedan como marcas sin descartar el registro. Todo se resume en la tabla de métricas `ops_calidad_metricas`.
@@ -77,7 +73,11 @@ Tablero **OceanWatch — Tráfico marítimo**, alimentado por la capa oro y las 
 
 **Evidencia:** el tablero publicado con una fecha elegida.
 
-![Tablero OceanWatch](docs/img/dashboard.png)
+![Tablero OceanWatch: indicadores y mapa](docs/img/dashboard.png)  
+
+![Tablero OceanWatch: ranking de puertos y buques en puerto](docs/img/dashboard2.png)  
+
+![Tablero OceanWatch: anomalías del día](docs/img/dashboard3.png)
 
 ### Punto 5: Gobernanza (10 %)
 Tres roles (ingenieros, científicos de datos y analistas) con permisos por tabla, contrato de datos de la capa oro y linaje de Unity Catalog.
@@ -93,15 +93,17 @@ Detección de anomalías de velocidad (`08_ml_anomalias`):
 - **Salida:** `ml_anomalias_velocidad`, con los buques atípicos de cada día. Corre como última tarea del job.
 - El objetivo es demostrar ML dentro de un pipeline reproducible, no maximizar la precisión.
 
-**Evidencia:** el experimento en MLflow, con parámetros y métricas.
+**Evidencia:** la versión 5 del modelo (alias `champion`), con los parámetros y métricas registrados en MLflow y la firma de entrada.
 
-![Experimento en MLflow](docs/img/mlflow_experimento.png)
+![Parámetros y métricas en MLflow](docs/img/mlflow_experimento.png)
+
+![Firma del modelo](docs/img/mlflow_experimento2.png)
 
 El modelo registrado en Unity Catalog, con sus versiones y el alias `champion`.
 
 ![Modelo registrado](docs/img/modelo_registrado.png)
 
-**Cómo leer el resultado.** El modelo marca el 1 % de buque-días con el perfil de velocidad más atípico. Coincide con solo el 27 % de los saltos detectados por regla (30 de 112), porque la regla detecta errores de posición y el modelo detecta comportamiento de velocidad: son señales complementarias. Los casos más extremos del modelo son lanchas rápidas de recreo y de fuerza pública, con 45 a 49 nudos y sin saltos de posición: atípicas pero plausibles. Sin etiquetas no se puede validar cuáles son errores y cuáles son comportamiento real.
+**Cómo leer el resultado.** El modelo marca el 1 % de buque-días con el perfil de velocidad más atípico. Coincide con solo el 16,7 % de los saltos detectados por regla, porque la regla detecta errores de posición y el modelo detecta comportamiento de velocidad: son señales complementarias. Los casos más extremos del modelo son lanchas rápidas de recreo y de fuerza pública, con 45 a 49 nudos y sin saltos de posición: atípicas pero plausibles. Sin etiquetas no se puede validar cuáles son errores y cuáles son comportamiento real.
 
 ### Punto 7: Repositorio y bitácora (5 %)
 - Código en `entrega2/notebooks`, definición del job en `entrega2/jobs` y tablero en `entrega2/dashboards`.
@@ -114,7 +116,7 @@ El modelo registrado en Unity Catalog, con sus versiones y el alias `champion`.
 - **Datos procesados:** 12 días (1 al 12 de junio de 2023), con entre 7,8 y 9,1 millones de posiciones de entrada por día.
 - **Calidad:** la cuarentena fue de entre 0,033 % y 0,073 % de las filas por día, muy por debajo del umbral de 1 %. La compuerta dio OK en los 12 días.
 - **Oro:** entre 19.500 y 21.700 buques por día en las trayectorias diarias.
-- **ML:** 235.000 buque-días puntuados con la misma versión del modelo, de los cuales el 1 % queda marcado como atípico.
+- **ML:** 254.244 buque-días puntuados con la misma versión del modelo (versión 5), de los cuales el 1 % queda marcado como atípico.
 
 ---
 
@@ -141,43 +143,6 @@ El modelo registrado en Unity Catalog, con sus versiones y el alias `champion`.
 2. **Cada día:** el job `oceanwatch_pipeline_diario`, que descarga el día siguiente y recorre las seis tareas. También se puede lanzar a mano.
 3. Los notebooks usan `00_config`, así que corren igual en el workspace del curso (`clase10.equipo10`) y en uno propio (`oceanwatch_e2`).
 
-## Guía de evidencias
-
-Las capturas se guardan en `docs/img/` con el nombre indicado. Para cada una: dónde sacarla y qué explicar.
-
-### Punto 1 · `ingesta_falla.png`
-- **Dónde:** notebook `02b_demo_falla` (ejecutarlo o abrir su última ejecución). Capturar las celdas "antes de la falla", "después de la falla", "después de recuperar" y la tabla de conciliación.
-- **Qué explicar:** la falla aborta el lote sin guardar filas parciales; al relanzar con el mismo checkpoint solo se procesa lo pendiente; y las filas de bronce coinciden con las líneas de cada CSV (la columna `diferencia` debe ser 0).
-
-### Punto 2 · `calidad_silver.png`
-- **Dónde:** notebook `04_silver`, última celda. Capturar la línea "bronce = plata + cuarentena + duplicados" y las tablas de cuarentena por causa y de métricas.
-- **Qué explicar:** no se pierde ninguna fila (diferencia 0) y cada registro rechazado tiene una causa documentada.
-
-### Punto 3 · `job_tareas.png`, `job_schedule.png`, `job_corrida.png`
-- **Dónde:** Jobs & Pipelines → `oceanwatch_pipeline_diario`.
-  - `job_tareas.png`: pestaña **Tasks**, con las seis tareas.
-  - `job_schedule.png`: panel derecho, **Schedules & triggers**.
-  - `job_corrida.png`: pestaña **Runs**, con una corrida terminada en verde (abrirla para ver el estado de cada tarea).
-- **Qué explicar:** el orden y las dependencias entre tareas, los reintentos y las alertas, el horario programado (6:00 a. m., hora de Bogotá) y que el pipeline completo terminó bien.
-- **Nota:** para mostrar una ejecución automática, la corrida debe haberse lanzado por el horario o por la llegada de archivos (en la pestaña Runs, la columna de disparador no debe decir "manual").
-
-### Punto 4 · `dashboard.png`
-- **Dónde:** Dashboards → **OceanWatch — Tráfico marítimo** (publicado). Elegir una fecha, por ejemplo 2023-06-10, y capturar la página completa.
-- **Qué explicar:** los indicadores del día, el mapa de intensidad por celda, el ranking de puertos con su filtro por categoría, los buques en puerto y las anomalías del día; todo sale de la capa oro y de las métricas de calidad.
-
-### Punto 5 · `contrato_overview.png`, `permisos_gold.png`, `linaje_gold.png`, `linaje_gold_lista.png`
-- **Dónde:** Catalog → `clase10` → `equipo10` → `gold_trayectorias_diarias`.
-  - `contrato_overview.png`: pestaña **Overview**.
-  - `permisos_gold.png`: pestaña **Permissions**.
-  - `linaje_gold.png`: pestaña **Lineage** → **See lineage graph**, con las tablas de la izquierda expandidas.
-  - `linaje_gold_lista.png`: pestaña **Lineage**, vista de lista.
-- **Qué explicar:** está en [docs/gobernanza.md](docs/gobernanza.md): quién tiene cada rol, el contrato de la tabla y de dónde viene y a dónde va.
-
-### Punto 6 · `mlflow_experimento.png`, `modelo_registrado.png`
-- **Dónde:**
-  - `mlflow_experimento.png`: menú **Experiments** → `oceanwatch_anomalias_velocidad` → abrir una corrida, con sus parámetros y métricas a la vista.
-  - `modelo_registrado.png`: Catalog → `proyecto` → `equipo10_ml` → **Models** → `modelo_anomalias_velocidad`, con las versiones y el alias `champion`.
-- **Qué explicar:** el experimento registra la semilla, la contaminación esperada y la versión de los datos (reproducibilidad), y métricas como el porcentaje de anomalías; el modelo queda versionado y se carga por su alias desde el pipeline.
 
 ## Fuentes de datos
 
@@ -191,4 +156,4 @@ Manuela Galarza - Joel David Niño - Andres Ochoa
 
 ---
 
-Última actualización: 26 de Noviembre de 2026
+Última actualización: 27 de Noviembre de 2026
