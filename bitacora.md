@@ -1,307 +1,151 @@
-# BITACORA - OceanWatch Analytics Entrega 1
+# BITACORA - OceanWatch Analytics Entrega 2
 
-Documento de seguimiento del Proyecto Final de MINE4213 - Sistemas Intensivos en Datos
+Documento de seguimiento de la Entrega 2 del Proyecto Final de MINE4213 - Sistemas Intensivos en Datos
 
 ---
 
 ## Resumen Ejecutivo
 
-Se completó exitosamente la Entrega 1 del proyecto OceanWatch Analytics, cubriendo los 6 puntos requeridos (100%) con implementación de conceptos de ingeniería de datos, optimización de almacenamiento y gobernanza de datos vistos en clase.
+La Entrega 2 convirtió el análisis de la Entrega 1 en un pipeline diario completo: ingesta en streaming, capas bronce, plata y oro con calidad como compuerta, orquestación con un job programado, tablero, gobernanza y un modelo de detección de anomalías con MLflow. Se procesaron 12 días de datos AIS (1 al 12 de junio de 2023) en el catálogo `clase10`, esquema `equipo10`.
 
 ---
 
-## Kick-off y Diseño
+## Diseño y arquitectura
 
 ### Qué se hizo
-- Análisis del enunciado del proyecto (Parte 1 - OceanWatch AIS)
-- Revisión de presentaciones del curso para alineamiento
-- Diseño de arquitectura del pipeline
-- Planificación de Puntos 4 y 5 (prioridades iniciales)
+- Se definió el flujo: NOAA → landing → bronce → plata → compuerta de calidad → oro → tablero, con ML al final.
+- Se separó cada capa en su propio notebook para poder orquestarlas como tareas independientes.
+- Se creó `00_config`, que detecta el workspace y arma los nombres de tablas y volúmenes, para que los notebooks corran igual en el workspace del curso y en uno propio.
 
-### Pasos a seguir
-1. Entendimiento del problema (tráfico marítimo)
-2. Definición de arquitectura (ingesta → procesamiento → almacenamiento)
-3. Alineamiento con objetivos de negocio (análisis de concentración de tráfico)
-
-El proyecto requería decisiones sobre:
-- Qué datos (NOAA AIS)
-- Cómo ingestarlo (descarga con verificación)
-- Cómo almacenarlos (Delta Lake vs Parquet)
-- Cómo gobernarlos (Unity Catalog)
-
-### Decisiones Técnicas
-- Seleccionar Delta Lake sobre Parquet: ACID transactions + versionado
-- Particionamiento jerárquico: date → lat_bucket → lon_bucket (basado en patrón de consultas)
-- Unity Catalog: preparación para gobernanza en producción
-
-### Resultados
-- Arquitectura validada
-- Puntos 4 y 5 diseñados con todas las métricas especificadas
-- Plan de implementación: 4 días
+### Decisiones técnicas
+- **Un solo esquema con prefijos de capa** (`bronze_`, `silver_`, `gold_`, `ops_`, `ml_`): el catálogo del curso es compartido, así que el equipo trabaja dentro de su esquema.
+- **Delta Lake y Unity Catalog** para tener transacciones, historial y control de acceso.
+- **Celdas H3 de resolución 7** (unos 5 km²) como unidad espacial común para la máscara de tierra, el tráfico y los puertos.
 
 ---
 
-## Implementación Puntos 4 y 5
+## Puntos 1 y 2 · Ingesta y capas
 
 ### Qué se hizo
-- Implementación de Punto 4: Almacenamiento Óptimo con Delta Lake
-- Implementación de Punto 5: Gobernanza Básica con Unity Catalog
-- Generación de métricas de compresión, I/O, benchmarks
+- **Landing:** descarga del zip del día y CSV completo en el volume que vigila Auto Loader. Si el archivo ya existe, no se repite.
+- **Bronce:** Auto Loader con esquema tomado del encabezado, todo como texto, columna de datos rescatados, archivo de origen y hora de ingesta. Checkpoint en un volume.
+- **Plata:** lectura en streaming de bronce con `foreachBatch`. Cada lote se valida, los registros buenos entran con un `MERGE` que solo inserta, y los malos van a cuarentena con su causa.
+- **Máscara de tierra:** las celdas H3 se clasifican como tierra con Natural Earth (tierra sin lagos ni ríos, a 5 km o más del agua, con pocos buques y pocas posiciones).
+- **Compuerta de calidad:** `06_quality_gate` corta el pipeline si la cuarentena supera 1 %, si no hay filas de entrada o si plata queda vacía, y deja un registro de cada evaluación.
+- **Oro:** tráfico por celda y hora, trayectorias diarias con detección de saltos de posición, presencia en puertos y una tabla de tipos de buque.
 
 ### Por qué se hizo
-- Distribución eficiente de datos
-- Optimización de queries (partition pruning, predicate pushdown)
-- Uso de formatos modernos (Delta Lake)
-- Delta Lake: ACID transactions, schema enforcement
-- Unity Catalog: metadatos centralizados, auditoría
-- Particionamiento: estrategia crítica para queries analíticas
+- Los datos AIS son crudos de sensores y traen problemas reales: identificadores mal formados, coordenadas imposibles, posiciones en tierra y velocidades inverosímiles. Separar el crudo (bronce) de lo validado (plata) permite reprocesar sin perder nada.
+- La cuarentena con causa documentada hace que cada rechazo sea explicable y medible.
+- La compuerta evita que un día de mala calidad contamine el modelo de negocio.
 
-### Implementación Detallada
-
-#### Punto 4 - Almacenamiento Óptimo
-
-**Paso 1: Propósito de Consulta (Opción C)**
-- Propósito: Análisis Espacial de Concentración de Tráfico
-- Justificación: Consultas típicas filtran por fecha + zona geográfica
-- Caso de uso: "¿Cuánto tráfico hay en el Caribe el 5 de junio?"
-
-**Paso 2: Formato (Opción 1 - Delta Lake)**
-```
-Particionamiento: date (principal) → lat_bucket → lon_bucket
-Compresión: Snappy
-Ubicación: Managed table en workspace Databricks
-```
-
-Decisión: Delta Lake porque:
-- ACID garantiza integridad (importante en datos públicos que pueden tener duplicados)
-- Time travel permite auditoría (requerido por gobernanza)
-- Schema enforcement previene corrupciones
-- Mejor compresión que Parquet
-
-**Paso 3: Todas las Métricas (5 implementadas)**
-
-1. Compresión en Bytes:
-   - CSV original: 6.482 GB
-   - Delta con Snappy: ~3-4 GB (30-50% reducción)
-   - Relevancia: Cumple objetivo de "almacenamiento óptimo"
-
-2. Distribución de Particiones (I/O):
-   - 7 particiones por fecha (7 días)
-   - ~500-1500 particiones por zona lat/lon
-   - Análisis: Partition pruning activo en 3 niveles
-
-3. Planes de Ejecución (EXPLAIN):
-   - Plan A sin particionamiento: Full scan de 60M filas
-   - Plan B con particionamiento: LocalTableScan solo de particiones relevantes
-   - Demostración: Predicate pushdown funciona automáticamente
-
-4. Benchmarks de Velocidad (Query Performance):
-   - Query 1 (sin optimizar): 17.704 segundos
-   - Query 2 (date partitioning): 1.519 segundos → 11.7x más rápido
-   - Query 3 (jerarquico completo): 1.111 segundos → 15.9x más rápido
-   - Implicación: Particionamiento jerárquico justificado
-
-5. Estadísticas Delta:
-   - Tabla optimizada con 22 columnas
-   - 60.5M filas
-   - Particionamiento: date, lat_bucket, lon_bucket
-   - Schema enforcement activo
-
-#### Punto 5 - Gobernanza Básica
-
-**Componentes Implementados**:
-
-1. Catálogo Unity Catalog:
-   - Nombre: oceanwatch
-   - Esquemas: raw (crudos) + processed (optimizados)
-   - Función: Separación de preocupaciones
-
-2. Tabla Registrada:
-   - oceanwatch.processed.data_points_optimized
-   - Apunta a tabla Delta del Punto 4
-   - 15 propiedades de tabla documentadas
-
-3. Metadatos (15 propiedades):
-   - description: Descripción funcional completa
-   - source: NOAA Marine Cadastre
-   - source_url: URL oficial
-   - update_frequency: daily
-   - storage_format: Delta Lake
-   - compression_codec: Snappy
-   - partitioning_strategy: Jerárquico
-   - data_quality_notes: Anomalías conocidas
-   - use_case_primary/secondary: Casos de uso identificados
-
-4. Comentarios en Columnas (21 documentadas):
-   - MMSI: Marine Mobile Service Identity (9 dígitos)
-   - LAT/LON: Rangos válidos (-90 a 90, -180 a 180)
-   - SOG: Speed Over Ground (0-102.2 nudos)
-   - VesselType: Código AIS (referencia ITU-R M.1371)
-   - Status: Estados de navegación (0=tránsito, 5=pesca, etc.)
-
-5. Vistas Operacionales (3 vistas):
-   - v_daily_traffic_summary: Resumen diario por fecha
-   - v_traffic_by_vessel_type: Composición de flota
-   - v_spatial_concentration: Hotspots geográficos
+### Tolerancia a fallos
+`02b_demo_falla` inyecta una falla al procesar un archivo, deja que el stream aborte sin guardar el lote, y luego relanza con el mismo checkpoint. La conciliación compara las filas de bronce contra las líneas de cada CSV para comprobar que no se perdió ni se duplicó nada.
 
 ### Resultados
-- Tabla Delta optimizada creada y verificada
-- Speedup de 15.9x logrado
-- Compresión de 30-50% confirmada
-- Unity Catalog estructura implementada
-- 3 vistas operacionales funcionales
+- `04_silver` concilia al final que bronce = plata + cuarentena + duplicados.
+- Entre 7,8 y 9,1 millones de posiciones de entrada por día.
+- La cuarentena estuvo entre 0,033 % y 0,073 % de las filas por día, muy por debajo del umbral de 1 %, y la compuerta dio OK en los 12 días.
+- Principales causas de cuarentena (día de ejemplo, 2023-06-10): posición en tierra, MMSI inválido y velocidad implausible.
+- Ese mismo día: 21.560 buques activos y 7,8 millones de posiciones.
 
 ---
 
-## Puntos 1, 2, 3
+## Punto 3 · Orquestación
 
 ### Qué se hizo
-- Punto 1: Ingesta completa de datos NOAA (verificación de integridad)
-- Punto 2: Exploración & Perfilamiento de datos
-- Punto 3: Análisis de 5 preguntas de negocio
+Job `oceanwatch_pipeline_diario`, con seis tareas encadenadas: landing, bronce, plata, compuerta de calidad, oro y ML.
+- Parámetro `fecha_feed`: `auto` toma el día siguiente al último cargado. La fecha resuelta en landing se pasa a las demás tareas.
+- Reintentos por tarea, alertas por duración y tiempos máximos.
+- Correo de aviso si el job falla.
+- Ejecución programada todos los días a las 6:00 a. m. (hora de Bogotá) y disparo adicional por llegada de archivos al volume de entrada.
 
 ### Por qué se hizo
-Orden lógico del pipeline:
-1. Ingestar datos confiablemente (Punto 1)
-2. Entender su estructura y calidad (Punto 2)
-3. Responder preguntas de negocio (Punto 3)
-4. Optimizar almacenamiento (Punto 4)
-5. Implementar gobernanza (Punto 5)
+Un pipeline diario necesita correr solo, reintentar lo que falla de forma transitoria y avisar cuando algo no se resuelve.
 
-Esta secuencia alineada con "Ingeniería de Datos con Spark" que define:
-- Extracción → Transformación → Carga (ETL)
-- Calidad de datos como requisito previo
-- Análisis downstream como validación
-
-### Punto 1 - Ingesta de Datos
-
-Implementación:
-- Descarga automática de 7 ZIP files desde NOAA
-- Verificación de integridad (CRC, tamaño esperado)
-- Manejo de reintentos con backoff exponencial
-- Lectura con schema definido (17 columnas)
-
-Resultados:
-- 7 archivos descargados exitosamente
-- 60,533,559 filas cargadas
-- 0 filas rechazadas por schema mismatch
-- Verificación: 100% de integridad
-
-### Punto 2 - Exploración & Perfilamiento
-
-Análisis de calidad:
-- Estadísticas generales: 60.5M filas, 22 columnas
-- Valores nulos: 0% en columnas críticas (MMSI, BaseDateTime, LAT, LON)
-- Anomalías detectadas:
-  - Coordenadas inválidas: 0 filas
-  - Velocidades imposibles (>102.2 nudos): 0 filas
-  - MMSI duplicados en mismo timestamp: 0 filas
-- Conclusión: 99.2% de datos válidos
-
-Distribuciones:
-- VesselType: 70 tipos distintos (Carga, Tanquero, Pasajeros lideran)
-- Status: 6 estados de navegación distintos
-- Rango LAT: -90 a 90 (válido)
-- Rango LON: -180 a 180 (válido)
-- Rango SOG: 0 a 102.2 nudos (válido)
-
-### Punto 3 - Preguntas de Negocio
-
-Preguntas y Respuestas:
-
-**a) Actividad diaria**: Cuántos buques distintos transmitieron cada día
-- Método: COUNT DISTINCT MMSI por fecha
-- Comparación: Conteo exacto vs HyperLogLog++ (error <5%)
-- Resultado: 3,847 - 5,284 buques por día
-- Interpretación: Actividad consistente a lo largo de la semana
-
-**b) Tipos de buque**: Qué generan más tráfico (Top 10)
-- Método: GROUP BY VesselType + AVG(SOG)
-- Resultado: Carga (45%), Tanquero (25%), Pasajeros (15%)
-- Velocidades: 10-12 nudos promedio
-- Insight: Carga es la clase dominante
-
-**c) Movilidad de buques**: Top 10 por distancia recorrida
-- Método: Haversine distance entre posiciones consecutivas
-- Ordenamiento: Window functions (LAG sobre BaseDateTime)
-- Resultado: Rango 1,247 - 8,934 km
-- Insight: Buques en rutas internacionales vs regionales
-
-**d) Concentración espacial**: Dónde se concentra el tráfico (Hotspots)
-- Método: Grilla H3 resolución 8 + World Port Index
-- Resultado: Top hotspots = principales puertos mundiales
-- Ubicaciones: Róterdam, Singapur, Shanghai, Malaca
-- Validación: Coincide con realidad geográfica
-
-**e) Permanencia**: Proporción 7 días vs visitantes 1 día
-- Método: COUNT DISTINCT dias por MMSI
-- Resultado: 12.4% transmitió 7 días, 8.7% solo 1 día
-- Interpretación: Mezcla de rutas regulares + ocasionales
-
-Los Puntos 1-3 demuestran:
-- "Ingeniería de Datos": Descarga confiable, transformación, validación
-- "Exploración de Datos": Estadísticas, distribuciones, anomalías
-- "Preguntas de Negocio": Análisis analítico con Spark SQL
+### Decisiones
+- La compuerta de calidad no tiene reintentos: si falla es por los datos, y reintentar no los arregla.
+- La tarea de ML va al final, para no afectar a las tareas anteriores.
+- Las tablas, el esquema y el modelo de ML pertenecen al grupo del equipo, de modo que cualquier integrante, o el propio job, puede usarlos.
 
 ### Resultados
-- Punto 1: 60.5M filas ingestadas, 100% válidas
-- Punto 2: 99.2% calidad de datos confirmada
-- Punto 3: 5 análisis completados, insights generados
+Una ejecución completa procesó el día 2023-06-12 de punta a punta, con las seis tareas en verde: 8,8 millones de filas de entrada, 0,0717 % de cuarentena, compuerta en OK y 19.299 buque-días puntuados por el modelo.
 
 ---
 
-## Documentación
+## Punto 4 · Consola de visualización
 
 ### Qué se hizo
-- Agregación de celdas markdown en notebook (explicaciones por punto)
-- Creación de README.md completo
-- Preparación de BITACORA.md
-- Validación de estructura final
+Tablero **OceanWatch — Tráfico marítimo**, publicado, alimentado por la capa oro y las métricas de calidad:
+- Indicadores del día: buques activos, buques en puerto, posiciones y % de cuarentena.
+- Mapa de intensidad por celda H3.
+- Ranking de puertos (top 15 por buques) con filtro por categoría de buque.
+- Buques en puerto.
+- Anomalías del día (calidad y saltos de posición).
+- Filtro por fecha.
+
+### Resultados
+Cada consulta del tablero se ejecutó con datos reales (fecha 2023-06-10) y devuelve resultados. El ranking muestra 15 puertos, desglosados por categoría de buque.
+
+---
+
+## Punto 5 · Gobernanza
+
+### Qué se hizo
+- **Permisos por rol:** tres roles (ingenieros, científicos de datos y analistas), con el mínimo acceso necesario: los analistas solo leen oro, y bronce y la cuarentena quedan solo para ingeniería.
+- **Contrato de datos:** descripción de cada tabla de oro y de cada columna dentro de Unity Catalog, más propiedades de dueño, granularidad, llave, frecuencia y origen.
+- **Linaje:** lo registra Unity Catalog de forma automática. Se ve el recorrido completo desde bronce hasta las tablas de ML y el tablero.
+- Todo se aplica con el notebook `07_gobernanza`. Detalle en [docs/gobernanza.md](docs/gobernanza.md) y [docs/contrato_datos_oro.md](docs/contrato_datos_oro.md).
+
+### Alcance de los permisos
+Cada rol se asigna a un grupo existente o a correos, y los permisos se dan tabla por tabla. Como el equipo comparte el grupo del curso, que tiene acceso a todo el esquema, la separación entre roles aplica a usuarios externos al equipo; entre los integrantes del equipo todos pueden trabajar sobre todas las capas, que es lo esperado en un proyecto conjunto.
+
+---
+
+## Punto 6 · ML con MLflow
+
+### Qué se hizo
+Detección de anomalías de velocidad por buque y día, con Isolation Forest. Las características salen de plata y oro, el experimento queda registrado en MLflow (parámetros, métricas y versión de los datos) y el modelo se registra en Unity Catalog con el alias `champion`. El resultado se guarda en `ml_anomalias_velocidad` y la tarea corre al final del job.
 
 ### Por qué se hizo
-Punto 6 (Documentación - 5%) requiere:
-- Explicaciones claras de cada punto
-- README profesional para repositorio
-- Bitácora de progreso
-- Preparación para GitHub
+- Se eligió detección de anomalías y no pronóstico de arribos porque se apoya directamente en la velocidad, que es una señal ya validada en plata, y funciona con pocos días de datos.
+- El enunciado pide demostrar ML dentro de un pipeline reproducible, no maximizar la precisión: por eso la semilla es fija, los parámetros y la versión de los datos quedan registrados, y la tabla de salida se reescribe por fecha sin duplicar.
 
-### Contenido Documentado
+### Decisión técnica
+El modelo se registra en `proyecto.equipo10_ml`, un esquema dedicado a ML y propiedad del grupo del equipo, para que cualquier integrante o el job puedan registrar nuevas versiones.
 
-README.md:
-- Descripción del proyecto (problem statement)
-- Estructura de repositorio
-- Detalle de Puntos 1-5
-- Resultados principales
-- Decisiones técnicas justificadas
-- FAQ
+### Resultados
+235.000 buque-días de 12 días, puntuados con la misma versión del modelo, de los cuales se marca el 1 % como atípico (2.350). El modelo coincide con el 27 % de los saltos que detecta la regla de oro, porque cada uno mira algo distinto: la regla detecta errores de posición y el modelo detecta comportamiento de velocidad. Los casos más extremos son lanchas rápidas de recreo y de fuerza pública, atípicas pero plausibles. Sin etiquetas no se puede decir cuáles son errores y cuáles son reales.
 
-Markdown en Notebook:
-- Introducción general del proyecto
-- Explicación de cada punto antes del código
-- Resultados y conclusiones
+---
 
-### Resultados Técnicos
-- Filas ingestadas: 60,533,559
-- Datos válidos: 99.2%
-- Speedup almacenamiento: 15.9x
-- Compresión lograda: 30-50%
-- Vistas operacionales: 3 implementadas
-- Propiedades documentadas: 15 tabla + 21 columnas
+## Punto 7 · Repositorio y documentación
 
+### Qué se hizo
+- Notebooks, definición del job y tablero en `entrega2/`.
+- `README.md` y esta bitácora para la Entrega 2.
+- Documentación de gobernanza y contrato de datos con sus capturas en `docs/`.
+
+---
 
 ## Lecciones Aprendidas
 
-### Ingeniería de Datos
-1. Verificación de integridad en descarga es crítica
-2. Schema definido previene errores downstream
-3. Particionamiento debe alinearse con patrones de consulta
+### Ingeniería de datos
+1. Separar el dato crudo del validado permite reprocesar sin perder nada.
+2. Un archivo de configuración por workspace evita duplicar notebooks.
+3. La cuarentena con causa vuelve medible la calidad de la fuente.
 
-### Optimización
-1. Partition pruning es más efectivo que query optimization
-2. Compresión Snappy apropiada para datos AIS (numéricos + strings)
-3. 3 niveles de particionamiento es el óptimo para este dataset
+### Orquestación y ML
+1. Registrar la versión de los datos junto con el modelo hace reproducible el experimento.
+2. Declarar el entorno de cada notebook (versión y librerías) lo hace reproducible en cualquier cómputo.
+3. Comparar el modelo contra una regla conocida ayuda a interpretarlo, aunque no coincidan.
+4. Los recursos que usa un job deben pertenecer al grupo del equipo y no a una persona.
 
 ### Gobernanza
-1. Metadatos en tiempo de creación > agregados después
-2. Comentarios en columnas críticos para usabilidad
-3. Vistas permiten abstraer complejidad de tabla base
+1. Los permisos se suman: dar acceso a un grupo amplio anula las restricciones individuales.
+2. Lo que no se pueda aplicar con el usuario actual debe quedar listado para quien sí puede, no fallar en silencio.
+3. Documentar el alcance real de los permisos es mejor que prometer una separación que no se cumple.
+
+---
+
+Última actualización: 26 de Noviembre de 2026
