@@ -2,11 +2,14 @@ resources:
   jobs:
     oceanwatch_pipeline_diario:
       name: oceanwatch_pipeline_diario
+      max_concurrent_runs: 1
+      email_notifications:
+        on_failure:
+          - am.ochoat@uniandes.edu.co
       tasks:
         - task_key: landing
           notebook_task:
-            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
-              2/01_landing
+            notebook_path: /Workspace/Users/Groups/mine-group10/Proyecto_SID/entrega2/notebooks/01_landing
             base_parameters:
               fecha: "{{job.parameters.fecha_feed}}"
             source: WORKSPACE
@@ -24,8 +27,7 @@ resources:
           depends_on:
             - task_key: landing
           notebook_task:
-            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
-              2/02_bronze
+            notebook_path: /Workspace/Users/Groups/mine-group10/Proyecto_SID/entrega2/notebooks/02_bronze
             source: WORKSPACE
           max_retries: 2
           min_retry_interval_millis: 60000
@@ -40,8 +42,7 @@ resources:
           depends_on:
             - task_key: bronze
           notebook_task:
-            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
-              2/04_silver
+            notebook_path: /Workspace/Users/Groups/mine-group10/Proyecto_SID/entrega2/notebooks/04_silver
             source: WORKSPACE
           max_retries: 2
           min_retry_interval_millis: 60000
@@ -56,13 +57,11 @@ resources:
           depends_on:
             - task_key: silver
           notebook_task:
-            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
-              2/06_quality_gate
+            notebook_path: /Workspace/Users/Groups/mine-group10/Proyecto_SID/entrega2/notebooks/06_quality_gate
             base_parameters:
               fecha: "{{tasks.landing.values.fecha}}"
               max_cuarentena_pct: "1.0"
             source: WORKSPACE
-          min_retry_interval_millis: 900000
           disable_auto_optimization: true
           timeout_seconds: 900
           health:
@@ -74,8 +73,7 @@ resources:
           depends_on:
             - task_key: quality_gate
           notebook_task:
-            notebook_path: /Workspace/Users/am.ochoat@uniandes.edu.co/Proyecto Entrega
-              2/05_gold
+            notebook_path: /Workspace/Users/Groups/mine-group10/Proyecto_SID/entrega2/notebooks/05_gold
             base_parameters:
               fecha: "{{tasks.landing.values.fecha}}"
             source: WORKSPACE
@@ -88,11 +86,36 @@ resources:
               - metric: RUN_DURATION_SECONDS
                 op: GREATER_THAN
                 value: 1800
+        - task_key: ml_anomalias
+          depends_on:
+            - task_key: gold
+          notebook_task:
+            notebook_path: /Workspace/Users/Groups/mine-group10/Proyecto_SID/entrega2/notebooks/08_ml_anomalias
+            base_parameters:
+              fecha: "{{tasks.landing.values.fecha}}"
+            source: WORKSPACE
+          max_retries: 1
+          min_retry_interval_millis: 60000
+          disable_auto_optimization: true
+          timeout_seconds: 3600
+          health:
+            rules:
+              - metric: RUN_DURATION_SECONDS
+                op: GREATER_THAN
+                value: 1800
+      schedule:
+        quartz_cron_expression: 0 0 6 * * ?
+        timezone_id: America/Bogota
+        pause_status: UNPAUSED
+      trigger:
+        pause_status: UNPAUSED
+        file_arrival:
+          url: /Volumes/clase10/equipo10/checkpoints/oceanwatch/entrada/
+          min_time_between_triggers_seconds: 300
+          wait_after_last_change_seconds: 60
       queue:
         enabled: true
       parameters:
-        - name: catalog
-          default: oceanwatch_e2
         - name: fecha_feed
           default: auto
       performance_target: PERFORMANCE_OPTIMIZED
