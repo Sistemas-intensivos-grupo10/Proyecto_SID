@@ -115,7 +115,7 @@ Detección de anomalías de velocidad por buque y día, con Isolation Forest. La
 El modelo se registra en `proyecto.equipo10_ml`, un esquema dedicado a ML y propiedad del grupo del equipo, para que cualquier integrante o el job puedan registrar nuevas versiones.
 
 ### Resultados
-235.000 buque-días de 12 días, puntuados con la misma versión del modelo, de los cuales se marca el 1 % como atípico (2.350). El modelo coincide con el 27 % de los saltos que detecta la regla de oro, porque cada uno mira algo distinto: la regla detecta errores de posición y el modelo detecta comportamiento de velocidad. Los casos más extremos son lanchas rápidas de recreo y de fuerza pública, atípicas pero plausibles. Sin etiquetas no se puede decir cuáles son errores y cuáles son reales.
+254.244 buque-días de 13 días, puntuados con la versión 5 del modelo, de los cuales se marca el 1 % como atípico (unos 2.540). El modelo coincide con el 16,7 % de los saltos que detecta la regla de oro, porque cada uno mira algo distinto: la regla detecta errores de posición y el modelo detecta comportamiento de velocidad. Los casos más extremos son lanchas rápidas de recreo y de fuerza pública, atípicas pero plausibles. Sin etiquetas no se puede decir cuáles son errores y cuáles son reales.
 
 ---
 
